@@ -1,0 +1,123 @@
+name: secret scanner
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        required: false
+        type: string
+      head_ref:
+        required: false
+        type: string
+      base_ref:
+        required: false
+        type: string
+    secrets:
+      token:
+        required: true
+      GH_PAT:
+        required: true
+      SLACK_TOKEN:
+        required: true
+
+jobs:
+  secret-scanner:
+    runs-on: ubuntu-latest
+    steps:
+    - run: gh release download v3.16.1 -p "*_linux_amd64.tar.gz" --repo "https://github.com/trufflesecurity/trufflehog"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - run: |
+        tar -xzvf trufflehog_3.16.1_linux_amd64.tar.gz
+        chmod +x trufflehog
+        sudo mv trufflehog /usr/bin
+        trufflehog --version
+    - name: checkout-called-repo
+      uses: actions/checkout@v3
+      with:
+        repository: '<Org/owner>/appsec-utils'
+        ref: 'master'
+        token: ${{ secrets.GH_PAT}}
+    - run: ls 
+    - name: checkout-target-repo
+      uses: actions/checkout@v3
+      with:
+        repository: ${{inputs.repo}}
+        ref: ${{inputs.head_ref}}
+        path: branch
+    - name: checkout-target-master
+      uses: actions/checkout@v3
+      with:
+        repository: ${{inputs.repo}}
+        ref: ${{inputs.base_ref}}
+        path: master
+    - run: |
+        rm "branch/.git/config" "master/.git/config"
+        trufflehog git file://master/ --json --no-update > master.json
+        trufflehog git file://branch/ --json --no-update > branch.json
+        python3 github-scripts/json_compare.py master.json branch.json > op.txt || EXX="$(echo $?)"  || true
+        if [[ EXX -eq 0 ]] ; then 
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "success"
+        else 
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "failure"
+        fi
+        VAR=$(cat op.txt)
+        VAR="${VAR//'%'/'%25'}"
+        VAR="${VAR//$'\n'/'%0A'}"
+        VAR="${VAR//$'\r'/'%0D'}"
+        echo "results=$VAR" >> $GITHUB_OUTPUT
+      id: diffscanner
+    - uses: actions/github-script@v6
+      if: steps.diffscanner.outputs.status == 'failure'
+      with:
+        script: |
+          let table = '| SecretType | Location                     |\n|------------|------------------------------|\n'
+          var body_response=`${{steps.diffscanner.outputs.results}}`.replace('%0A','\n')
+          body_response=JSON.parse(body_response)
+          for (var key of Object.keys(body_response)) {
+            var temp=body_response[key]
+            table+='| '+temp["detector"]+' | '+temp["source"]+'|\n'
+            }
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `❗Security Vulnerabilities found❗
+                   **Hardcoded Secrets**
+                   ${table}`
+          })
+    - name: Send notification to slack
+      if: steps.diffscanner.outputs.status == 'failure'
+      id: slack
+      run: |
+        curl ${{ secrets.SLACK_TOKEN }} \
+          --request POST \
+          --header 'Content-type: application/json' \
+          --data '{
+            "text": "Secret Checked into: ${{ job.status }}\n${{ github.event.pull_request.html_url}}",
+            "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "Secret Leak ❗",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "Detected secret checked into: *${{github.event.repository.name}}* \n${{ github.event.pull_request.html_url}}"
+                    }
+                  }
+                ]
+            }'
+    - name: Pass or fail
+      run: |
+        if [[ ${{ steps.diffscanner.outputs.status }} == "failure" ]]; then 
+          exit 1
+        fi
+        

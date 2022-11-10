@@ -1,0 +1,15 @@
+name: Security action
+
+on: [pull_request]
+
+jobs:
+  security-action:
+    uses: 
+    with:
+      repo: ${{ github.repository }}
+      head_ref: ${{ github.head_ref}}
+      base_ref: ${{github.base_ref }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+      GH_PAT: ${{ secrets.GH_PAT}}
+      SLACK_TOKEN: ${{secrets.APPSEC_ALERTS_SLACK}}

@@ -1,0 +1,14 @@
+    - name: setup go
+      uses: actions/setup-go@v3
+      with:
+        go-version: '^1.13.1' # The Go version to download (if necessary) and use.
+    - name: checkout truffle
+      uses: actions/checkout@v3
+      with:
+        repository: trufflesecurity/trufflehog
+    - run: go install 
+    - name: checkout source repo
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ inputs.repo }}
+        ref: ${{ inputs.head_ref }} 
